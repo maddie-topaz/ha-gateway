@@ -293,11 +293,13 @@ export const notifyMaddiesPhone: ActionDefinition = {
 | `phoneNotify(notifyEntityId, defaults?)` | Sends a notification to any phone, e.g. `phoneNotify("notify.cams_iphone")`. On an iPhone with Announce Notifications on for the Home Assistant app, Siri reads it aloud through AirPods or CarPlay. | `title`, `message` |
 | `alexaSay(echoEntityId)` | Makes the chosen Echo say the app's message. Pass `{ type: "tts" }` to skip the announcement chime. **Needs the Alexa Media Player integration, which isn't installed yet.** | `message` |
 | `phoneSay(notifyService)` | Makes an Android phone read the app's message out loud, on media volume. For Maddie's Pixel: `phoneSay("mobile_app_maddie_s_pixel")`. Not supported on iPhones: use `phoneNotify` for those. | `message` |
+| `turnOnAction(entityIds, { data?, params? })` | Turns one or more entities on, e.g. `turnOnAction("light.upstairs_lamp", { data: { brightness_pct: 80 } })`. Add `params: { brightness_pct: "number" }` to let the app choose. | Only what you allow |
+| `turnOffAction(entityIds)` / `toggleAction(entityIds)` | Turns entities off, or toggles them. Several entities must share a domain (all lights, say). | None |
 | `speakOn(mediaPlayerEntityId)` | Makes a speaker or TV say the app's message using HA's text-to-speech. Candidates: `media_player.upstairs_speaker`, `shield`, `shield_2`, `downstairs`, `coreelec`. Test one before relying on it. | `message` |
 
-`phoneNotify`, `alexaSay`, `phoneSay` and `speakOn` are functions because each app picks its own device: `say_upstairs: speakOn("media_player.upstairs_speaker")`.
+`phoneNotify`, `alexaSay`, `phoneSay`, `speakOn` and the on/off builders are functions because each app picks its own device: `say_upstairs: speakOn("media_player.upstairs_speaker")`.
 
-Put actions more than one app might use in `src/apps/shared/actions.ts`. Never add actions for locks, the alarm, sirens, the garage door or camera motion detection. A bug in an app or a leaked key shouldn't be able to open the house.
+Put actions more than one app might use in `src/apps/shared/actions.ts`. Never add actions for locks, the alarm, sirens, the garage door or camera motion detection. The on/off builders enforce this: they refuse `lock`, `alarm_control_panel`, `siren` and `cover` entities, and anything with alarm, siren, lock, garage or motion_detection in its name, so the gateway won't start with one. A bug in an app or a leaked key shouldn't be able to open the house.
 
 ### 2. Give it to the app
 

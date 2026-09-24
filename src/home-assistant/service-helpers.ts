@@ -3,8 +3,8 @@ import { HomeAssistantInvalidRequestError, type ServiceData } from "./types.js";
 
 const ENTITY_ID = /^([a-z0-9_]+)\.[a-z0-9_]+$/;
 
-/** "light.lounge" → "light". */
-const domainOf = (entityId: string) => {
+/** "light.lounge" → "light". Throws HomeAssistantInvalidRequestError for malformed entity IDs. */
+export const domainOf = (entityId: string) => {
   const match = ENTITY_ID.exec(entityId);
   if (!match?.[1]) throw new HomeAssistantInvalidRequestError(`Invalid entity ID "${entityId}"`);
   return match[1];

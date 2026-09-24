@@ -11,7 +11,9 @@
  *
  * Never add actions for locks, the alarm, sirens, the garage door or camera motion detection.
  */
-import type { ActionDefinition } from "../../home-assistant/actions.js";
+import type { ActionDefinition, ParamSpec } from "../../home-assistant/actions.js";
+import { domainOf } from "../../home-assistant/service-helpers.js";
+import type { ServiceData } from "../../home-assistant/types.js";
 
 /**
  * Sends a notification to one phone, through its notify entity (works for iPhone and Android).
@@ -91,3 +93,50 @@ export const phoneSay = (notifyService: string): ActionDefinition => ({
   data: { message: "TTS", data: { media_stream: "music_stream" } },
   params: { message: { type: "string", path: ["data", "tts_text"] } },
 });
+
+// Domains and entity names that secure the house. On/off actions refuse them outright, so a
+// typo or copy-paste can't hand an app the alarm, a lock, a siren or the garage door.
+const BLOCKED_DOMAINS = new Set(["lock", "alarm_control_panel", "siren", "cover"]);
+const BLOCKED_NAME = /alarm|siren|lock|garage|motion_detection/;
+
+/** Checks one or more entities share a domain and aren't security devices, and returns the domain. */
+const onOffDomain = (entityIds: string | readonly string[]) => {
+  const ids = typeof entityIds === "string" ? [entityIds] : entityIds;
+  if (ids.length === 0) throw new Error("On/off actions need at least one entity");
+
+  const domains = new Set(ids.map(domainOf));
+  if (domains.size > 1) throw new Error(`On/off action mixes domains (${[...domains].join(", ")}): use one action per domain`);
+
+  for (const id of ids) {
+    const [domain = "", name = ""] = id.split(".");
+    if (BLOCKED_DOMAINS.has(domain) || BLOCKED_NAME.test(name)) {
+      throw new Error(`${id} looks like a security device, so it can't be used in an on/off action`);
+    }
+  }
+  return [...domains][0]!;
+};
+
+const onOffAction = (service: string, entityIds: string | readonly string[], extra: Partial<ActionDefinition> = {}) => ({
+  domain: onOffDomain(entityIds),
+  service,
+  target: { entity_id: entityIds },
+  ...extra,
+});
+
+/**
+ * Turns one or more entities on, e.g. `turnOnAction("light.upstairs_lamp")`. Several entities must
+ * share a domain: `turnOnAction(["light.lamp_1", "light.lamp_2"])`.
+ * - `data`: fixed values, like `{ brightness_pct: 80 }`.
+ * - `params`: values the app may pass, like `{ brightness_pct: "number" }`. They override `data`.
+ * Refuses locks, the alarm, sirens, covers and the garage door (checked at startup).
+ */
+export const turnOnAction = (
+  entityIds: string | readonly string[],
+  { data, params }: { data?: ServiceData; params?: Record<string, ParamSpec> } = {},
+): ActionDefinition => onOffAction("turn_on", entityIds, { ...(data && { data }), ...(params && { params }) });
+
+/** Turns one or more entities off. Same rules as turnOnAction. */
+export const turnOffAction = (entityIds: string | readonly string[]): ActionDefinition => onOffAction("turn_off", entityIds);
+
+/** Toggles one or more entities. Same rules as turnOnAction. */
+export const toggleAction = (entityIds: string | readonly string[]): ActionDefinition => onOffAction("toggle", entityIds);
