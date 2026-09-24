@@ -1,5 +1,6 @@
+import type { AlexaReplies } from "../alexa/skill.js";
 import type { ActionDefinition } from "../home-assistant/actions.js";
-import type { StateRule } from "../home-assistant/events.js";
+import type { CustomEventRule, StateRule } from "../home-assistant/events.js";
 
 /** Everything one app gets from the gateway. Each app lives in its own file in src/apps/. */
 export type AppDefinition = {
@@ -16,6 +17,18 @@ export type AppDefinition = {
   };
   /** Which HA state changes this app hears about. The first matching rule wins. */
   readonly events?: readonly StateRule[];
+  /** Which custom HA events (fired by automations) this app hears about, by HA event type. */
+  readonly customEvents?: readonly CustomEventRule[];
+  /**
+   * An Alexa custom skill whose phrases reach this app as PHRASE_HEARD events.
+   * Its endpoint is `/v1/alexa/<app name>`. See README: Alexa phrases.
+   */
+  readonly alexa?: {
+    /** Env var holding the skill ID (amzn1.ask.skill.…). Only that skill can reach this app. */
+    readonly skillIdEnv: string;
+    /** What Alexa says back. Anything left out uses the defaults in src/alexa/skill.ts. */
+    readonly replies?: Partial<AlexaReplies>;
+  };
   /** What this app can make HA do, via POST /v1/actions/<name>. Keys are the action names. */
   readonly actions?: Record<string, ActionDefinition>;
 };

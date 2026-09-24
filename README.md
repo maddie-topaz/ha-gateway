@@ -24,6 +24,7 @@ Your apps never talk to Home Assistant directly and never see the HA token. They
 - [Choose which events an app gets](#choose-which-events-an-app-gets)
 - [Receive events in your app](#receive-events-in-your-app)
 - [Let an app trigger actions](#let-an-app-trigger-actions)
+- [Alexa phrases](#alexa-phrases)
 - [Troubleshooting](#troubleshooting)
 - [Environment variables](#environment-variables)
 - [HTTP API](#http-api)
@@ -202,6 +203,45 @@ Attribute-only updates (the state didn't actually change) and changes to `unavai
 | `zoneActivity` | `ZONE_ACTIVITY` | A motion, occupancy or presence sensor changes | `{ active: boolean }` |
 | `contactChanged` | `CONTACT_CHANGED` | A door, window, garage door or opening sensor changes | `{ open: boolean }` |
 
+### Custom events from HA automations
+
+Some things aren't an entity changing state, like a voice phrase. For those, a HA automation fires a custom event with its own data, and the app lists the event types it wants in `customEvents`:
+
+```ts
+customEvents: [phraseHeard("cam_quest_phrase")],
+```
+
+A custom event rule has a `type` (the event type your app receives), an `eventType` (the HA event to listen for) and an optional `data` function. Without `data`, the HA event's own data is passed through as-is. The gateway subscribes to each `eventType` directly, so any automation that fires it reaches the app.
+
+| Shared rule | Type | Fires when | `data` |
+| --- | --- | --- | --- |
+| `phraseHeard(eventType)` | `PHRASE_HEARD` | A HA automation fires `eventType` | The automation's `event_data`, e.g. `{ phrase: "open the portal" }` |
+
+### Voice phrases
+
+The gateway can't hear anything. HA Assist does the listening, from the companion app on a phone or a voice device like the Home Assistant Voice Preview Edition, and an automation passes the phrase on. For Cam Quest:
+
+1. Make sure Assist can turn speech into text: **Settings → Voice assistants** needs a speech-to-text engine (Home Assistant Cloud, or the Whisper add-on).
+2. Add this automation (**Settings → Automations → Create → ⋮ → Edit in YAML**):
+
+   ```yaml
+   alias: Cam Quest - phrase heard
+   triggers:
+     - trigger: conversation
+       command: "cast {spell}"
+   actions:
+     - event: cam_quest_phrase
+       event_data:
+         phrase: "{{ trigger.slots.spell }}"
+         sentence: "{{ trigger.sentence }}"
+         source: assist
+     - set_conversation_response: "Casting {{ trigger.slots.spell }}..."
+   ```
+
+3. Open Assist (in the companion app, or say the wake word to a voice device) and say "cast open the portal". Cam Quest receives `PHRASE_HEARD` with `data: { phrase: "open the portal", sentence: "cast open the portal", source: "assist" }`.
+
+New phrases need no gateway or HA changes, because the app decides what each phrase does. Phrases said to an Echo arrive as the same `PHRASE_HEARD` event, with `source: "alexa"` (see [Alexa phrases](#alexa-phrases)). To test without speaking, fire `cam_quest_phrase` from **Developer tools → Events** with data `phrase: open the portal`.
+
 ## Receive events in your app
 
 If the app has a `webhook` and its URL variable is set in Railway, each event arrives as a `POST` with a JSON body:
@@ -232,6 +272,12 @@ Authorization: Bearer <the app's webhook secret>
 | `state` / `previousState` | The new and old HA state. `previousState` is `null` if HA had no earlier state. |
 | `timestamp` | When the state changed in HA (ISO 8601). |
 | `data` | Extra fields from the rule, if it defines any. |
+
+Events from [custom events](#custom-events-from-ha-automations) have no entity, so they only carry `type`, `timestamp` (when HA fired the event) and `data`:
+
+```json
+{ "type": "PHRASE_HEARD", "timestamp": "2026-09-25T10:05:00.000Z", "data": { "phrase": "open the portal" } }
+```
 
 Your endpoint should:
 
@@ -363,6 +409,48 @@ await triggerAction("test_phone_notification", { message: "Quest complete" });
 
 Actions aren't retried or queued. If HA is down, the call fails straight away with a 503 and the app decides whether to try again.
 
+## Alexa phrases
+
+An app can have its own Alexa custom skill, so anything said to an Echo after the skill's name reaches the app as a `PHRASE_HEARD` event:
+
+> "Alexa, ask the spellbook to cast open the portal"
+
+```json
+{ "type": "PHRASE_HEARD", "timestamp": "2026-09-25T10:05:00Z", "data": { "phrase": "open the portal", "source": "alexa" } }
+```
+
+Alexa then speaks the app's reply and the conversation ends. Saying only "Alexa, open the spellbook" makes Alexa ask for a phrase and wait. Home Assistant isn't involved: Alexa calls the gateway directly.
+
+The app opts in with `alexa` in its definition:
+
+```ts
+alexa: {
+  skillIdEnv: "CAM_QUEST_ALEXA_SKILL_ID",
+  replies: { launch: "Speak your spell.", heard: (phrase) => `${phrase}. So it shall be.` },
+},
+```
+
+`replies` is optional. Anything left out uses the defaults in `src/alexa/skill.ts` (`launch`, `heard`, `help`, `goodbye`, `notUnderstood`).
+
+**Create the skill** at [developer.amazon.com](https://developer.amazon.com/alexa/console/ask), signed in with the Amazon account the Echo is registered to. Skills in development only work on that account's own devices.
+
+1. **Create Skill.** Any name. Choose a **Custom** model, **Provision your own** hosting, and **Start from scratch**. The language must match the Echo's (English (US) and English (UK) are different), or the skill silently won't respond.
+2. **Invocation name**, e.g. `the spellbook`. Lowercase, usually two or more words, and without "alexa", "echo", "skill" or "app".
+3. **Intents → Add intent → Create custom intent** named `PhraseIntent`. Add a slot named `phrase` of type `AMAZON.SearchQuery`, then these sample utterances:
+   ```text
+   cast {phrase}
+   the password is {phrase}
+   say {phrase}
+   ```
+   A `SearchQuery` slot can't be the whole utterance, which is why each one starts with a word like "cast".
+4. **Endpoint → HTTPS.** Default region: `https://<your gateway domain>/v1/alexa/<app name>`, e.g. `https://ha-gateway-production.up.railway.app/v1/alexa/cam-quest`. For the certificate, choose **My development endpoint is a sub-domain of a domain that has a wildcard certificate from a certificate authority**.
+5. **Build Model**, then on the **Test** tab set testing to **Development**.
+6. Copy the **Skill ID** (`amzn1.ask.skill.…`, under the skill's name in the skills list) into the app's skill ID variable in Railway, e.g. `CAM_QUEST_ALEXA_SKILL_ID`, and deploy.
+
+Try it from the **Test** tab by typing "ask the spellbook to cast open the portal". This works before touching a real Echo, and the gateway logs show `alexa phrase heard`. You can build and test the skill on your own Amazon account first, then create it again on the Echo owner's account later. Only the skill ID variable changes.
+
+**Security:** there's no API key, since Alexa can't send one. Instead every request must carry Amazon's signature, made with a certificate for `echo-api.amazon.com` that leads to a trusted root, be less than 150 seconds old and name the app's own skill ID. Anything else gets a `400` and is logged as `alexa request rejected`.
+
 ## Troubleshooting
 
 | What you see | What to do |
@@ -375,6 +463,8 @@ Actions aren't retried or queued. If HA is down, the call fails straight away wi
 | An action returns `401` | The key doesn't match the app's API key variable in Railway. Keys from before the per-app change (`GATEWAY_API_KEY`) no longer work. |
 | An action returns `404` | The action isn't in that app's `actions`, or the URL is missing `/v1`, or the request is a GET instead of a POST. |
 | An action returns `502` | HA didn't accept the service call. Run the same call in HA under **Developer tools → Actions** to find the problem. |
+| Alexa says "There was a problem with the requested skill's response" | Check the gateway logs. `alexa request rejected` means the check failed: usually the skill ID variable doesn't match the skill, or the endpoint URL has the wrong app name. No log line at all means the endpoint URL is wrong. |
+| Alexa says it doesn't know that, or opens something else | The phrase didn't match a sample utterance, or the invocation name was misheard. Try the same sentence typed into the skill's **Test** tab. |
 | Events are logged but the app gets nothing | Look for the startup warning about the app's webhook URL not being set, or `event consumer failed` (the app's endpoint errored or took longer than 5 seconds). |
 
 ## Environment variables
@@ -394,6 +484,7 @@ Each app adds its own variables, named in its folder in `src/apps/`. For Cam Que
 | `CAM_QUEST_API_KEY` | Cam Quest's key for calling its actions. 32+ characters. |
 | `CAM_QUEST_WEBHOOK_URL` | Where Cam Quest's events are POSTed. |
 | `CAM_QUEST_WEBHOOK_SECRET` | Sent as `Authorization: Bearer …` with those POSTs. |
+| `CAM_QUEST_ALEXA_SKILL_ID` | Cam Quest's Alexa skill ID (`amzn1.ask.skill.…`). Unset turns its Alexa endpoint off. See [Alexa phrases](#alexa-phrases). |
 
 The service refuses to start if anything required is missing or invalid, and the error lists every problem at once. Optional things that are missing (like an app's webhook URL) are logged as warnings at startup.
 
@@ -405,11 +496,12 @@ The service refuses to start if anything required is missing or invalid, and the
 | `GET /v1/status` | App API key | More detail: which app you are, HA version, active subscriptions. |
 | `GET /v1/actions` | App API key | Lists the calling app's actions and the params each accepts. |
 | `POST /v1/actions/:name` | App API key | Runs one of the calling app's actions. See [Let an app trigger actions](#let-an-app-trigger-actions). |
+| `POST /v1/alexa/:app` | Amazon's request signature | The endpoint for an app's Alexa skill. See [Alexa phrases](#alexa-phrases). |
 
 ## How it works
 
-1. The gateway opens a WebSocket to HA, authenticates with the token and subscribes to `state_changed`.
-2. Each change is checked against every app's `events` rules separately. A match becomes an event for that app, and everything else is dropped.
+1. The gateway opens a WebSocket to HA, authenticates with the token and subscribes to `state_changed`, plus each custom event type an app lists in `customEvents`.
+2. Each change is checked against every app's `events` rules separately. A match becomes an event for that app, and everything else is dropped. Custom events go straight to the apps that asked for them.
 3. Every event is logged and POSTed to the app it belongs to.
 4. When an app calls `POST /v1/actions/<name>`, the gateway works out which app it is from the API key, checks the action is in that app's list and the params are allowed, then runs the service call over the same HA connection.
 5. A ping every 30 seconds catches dead connections. If the connection drops, the gateway reconnects with exponential backoff (1 second, doubling up to 60), then re-subscribes automatically.
@@ -422,6 +514,7 @@ src/
 ├── apps/                 ★ One folder per app, plus the list of apps
 │   └── shared/           ★ Reusable event rules and actions
 ├── config/env.ts         Environment variable validation
+├── alexa/                Alexa skill endpoint: request verification and replies
 ├── api/                  HTTP server (/health, /v1) and per-app key auth
 ├── home-assistant/       Everything HA-specific: connection, service calls and helpers, state queries, actions, rule matching
 └── routing/              Event router, webhook delivery and the event shape

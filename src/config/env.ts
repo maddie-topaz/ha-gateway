@@ -28,6 +28,8 @@ export type ResolvedApp = {
   apiKey: string | undefined;
   /** Undefined means the app's events are only logged. */
   webhook: { url: string; secret: string | undefined } | undefined;
+  /** Undefined means the app has no Alexa skill, or its skill ID isn't set, so its Alexa endpoint is off. */
+  alexaSkillId: string | undefined;
 };
 
 export class ConfigError extends Error {
@@ -58,6 +60,7 @@ const toWebSocketUrl = (raw: string): string => {
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 const APP_NAME = /^[a-z0-9-]+$/;
+const ALEXA_SKILL_ID = /^amzn1\.ask\.skill\.[0-9a-f-]+$/;
 
 const resolveWebhookUrl = (urlEnv: string, url: string, problems: string[]) => {
   let parsed: URL;
@@ -108,7 +111,16 @@ const resolveApps = (read: (name: string) => string | undefined, problems: strin
       }
     }
 
-    return { definition, apiKey, webhook: resolvedWebhook };
+    let alexaSkillId: string | undefined;
+    if (definition.alexa) {
+      const { skillIdEnv } = definition.alexa;
+      const skillId = read(skillIdEnv);
+      if (!skillId) warnings.push(`${name}: ${skillIdEnv} is not set, so ${name}'s Alexa skill is off`);
+      else if (!ALEXA_SKILL_ID.test(skillId)) problems.push(`${skillIdEnv} must look like amzn1.ask.skill.<id>`);
+      else alexaSkillId = skillId;
+    }
+
+    return { definition, apiKey, webhook: resolvedWebhook, alexaSkillId };
   });
 };
 

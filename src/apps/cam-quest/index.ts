@@ -1,5 +1,5 @@
 import {defineApp} from "../types.js";
-import {zoneActivity} from "../shared/events.js";
+import {phraseHeard, zoneActivity} from "../shared/events.js";
 import {notifyMaddiesPhone, phoneNotify, phoneSay, turnOffAction, turnOnAction} from "../shared/actions.js";
 
 
@@ -20,6 +20,16 @@ export const camQuest = defineApp({
   webhook: { urlEnv: "CAM_QUEST_WEBHOOK_URL", secretEnv: "CAM_QUEST_WEBHOOK_SECRET" },
 
   events: [zoneActivity],
+  // Fired by the "Cam Quest - phrase heard" HA automation (see README: Voice phrases).
+  customEvents: [phraseHeard("cam_quest_phrase")],
+  // "Alexa, ask <invocation name> to cast open the portal" (see README: Alexa phrases).
+  alexa: {
+    skillIdEnv: "CAM_QUEST_ALEXA_SKILL_ID",
+    replies: {
+      launch: "Speak your spell.",
+      heard: (phrase) => `${phrase}. So it shall be.`,
+    },
+  },
 
   actions: {
     test_phone_notification: notifyMaddiesPhone,

@@ -1,8 +1,10 @@
+import { defaultReplies } from "./alexa/skill.js";
+import { createAlexaVerifier } from "./alexa/verify.js";
 import { createServer } from "./api/server.js";
 import { ConfigError, loadConfig, type Config } from "./config/env.js";
 import { createActionRunner } from "./home-assistant/actions.js";
 import { createHomeAssistantClient } from "./home-assistant/client.js";
-import { createStateChangeNormalizer } from "./home-assistant/events.js";
+import { createCustomEventNormalizer, createStateChangeNormalizer } from "./home-assistant/events.js";
 import { createLogger } from "./logger.js";
 import { createEventRouter, createLogConsumer } from "./routing/event-router.js";
 import { createWebhookConsumer } from "./routing/webhook.js";
@@ -56,6 +58,17 @@ const main = async () => {
     }
   });
 
+  // Custom events are subscribed to by type, so each rule gets its own HA subscription.
+  for (const { definition } of config.apps) {
+    for (const rule of definition.customEvents ?? []) {
+      const normalize = createCustomEventNormalizer(rule);
+      void homeAssistant.subscribeEvents(rule.eventType, (event) => {
+        logger.debug({ event }, "ha custom event received");
+        router.route(definition.name, normalize(event));
+      });
+    }
+  }
+
   const serverApps = config.apps.map(({ definition, apiKey }) => ({
     name: definition.name,
     apiKey,
@@ -66,7 +79,19 @@ const main = async () => {
     }),
   }));
 
-  const server = createServer({ logger, homeAssistant, router, apps: serverApps });
+  const alexaApps = config.apps.flatMap(({ definition, alexaSkillId }) =>
+    alexaSkillId
+      ? [{ name: definition.name, skillId: alexaSkillId, replies: { ...defaultReplies, ...definition.alexa?.replies } }]
+      : [],
+  );
+
+  const server = createServer({
+    logger,
+    homeAssistant,
+    router,
+    apps: serverApps,
+    alexa: { apps: alexaApps, verifier: createAlexaVerifier() },
+  });
 
   let shuttingDown = false;
   const shutdown = async (signal: string) => {

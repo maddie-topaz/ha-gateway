@@ -29,7 +29,7 @@ export const createWebhookConsumer = ({ app, url, secret, logger, timeoutMs = 5_
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (!response.ok) throw new Error(`POST to ${host} responded ${response.status}`);
-      log.info({ host, eventType: event.type, entityId: event.entityId }, "webhook delivered");
+      log.info({ host, eventType: event.type, ...("entityId" in event && { entityId: event.entityId }) }, "webhook delivered");
     },
   };
 };

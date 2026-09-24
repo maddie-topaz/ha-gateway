@@ -1,5 +1,5 @@
-import type { GatewayEvent } from "../routing/types.js";
-import type { HassEntityState, StateChangedEvent } from "./types.js";
+import type { CustomEvent, StateChangeEvent } from "../routing/types.js";
+import type { HassEntityState, HassEvent, StateChangedEvent } from "./types.js";
 
 /** A state_changed event where the state value itself changed (not just attributes). */
 export type StateTransition = {
@@ -56,7 +56,7 @@ const matches = ({ match }: StateRule, t: StateTransition) =>
 /** Builds a state_changed → GatewayEvent function from rules. The first matching rule wins. */
 export const createStateChangeNormalizer =
   <TType extends string>(rules: readonly StateRule<TType>[]) =>
-  (event: StateChangedEvent): GatewayEvent<TType> | null => {
+  (event: StateChangedEvent): StateChangeEvent<TType> | null => {
     const transition = toTransition(event);
     if (!transition) return null;
 
@@ -74,3 +74,24 @@ export const createStateChangeNormalizer =
       ...(rule.data && { data: rule.data(transition) }),
     };
   };
+
+/**
+ * Rule turning a custom HA event (fired by an automation's `event:` action) into a gateway event.
+ * Unlike StateRule, it matches on the HA event type alone, so the gateway subscribes to `eventType` directly.
+ */
+export type CustomEventRule<TType extends string = string> = {
+  readonly type: TType;
+  /** The HA event type to listen for, e.g. `"cam_quest_phrase"`. */
+  readonly eventType: string;
+  /** Fields to put in the event's `data`. Defaults to the HA event's own data. */
+  readonly data?: (event: HassEvent) => Record<string, unknown>;
+};
+
+/** Builds a HA event → GatewayEvent function for one custom event rule. */
+export const createCustomEventNormalizer =
+  <TType extends string>(rule: CustomEventRule<TType>) =>
+  (event: HassEvent): CustomEvent<TType> => ({
+    type: rule.type,
+    timestamp: event.time_fired,
+    data: rule.data ? rule.data(event) : event.data,
+  });

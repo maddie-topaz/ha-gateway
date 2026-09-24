@@ -1,5 +1,7 @@
 import Fastify, { LogController, type FastifyRequest } from "fastify";
 import { InvalidActionParamsError, UnknownActionError, type ActionRunner } from "../home-assistant/actions.js";
+import { alexaRoutes, type AlexaApp } from "../alexa/routes.js";
+import type { AlexaVerifier } from "../alexa/verify.js";
 import type { HomeAssistantClient } from "../home-assistant/client.js";
 import {
   HomeAssistantCommandError,
@@ -23,6 +25,8 @@ type ServerOptions = {
   homeAssistant: HomeAssistantClient;
   router: EventRouter;
   apps: ServerApp[];
+  /** Apps with an Alexa skill, and how to check requests really come from Alexa. */
+  alexa: { apps: AlexaApp[]; verifier: AlexaVerifier };
 };
 
 /** Maps action failures to HTTP responses so apps can tell "HA is down" from "you sent bad params". */
@@ -38,7 +42,7 @@ const actionErrorResponse = (err: unknown) => {
   return undefined;
 };
 
-export const createServer = ({ logger, homeAssistant, router, apps }: ServerOptions) => {
+export const createServer = ({ logger, homeAssistant, router, apps, alexa }: ServerOptions) => {
   const appsByName = new Map(apps.map((a) => [a.name, a]));
 
   const app = Fastify({
@@ -63,6 +67,9 @@ export const createServer = ({ logger, homeAssistant, router, apps }: ServerOpti
       uptimeSeconds: Math.round(process.uptime()),
     };
   });
+
+  // Alexa skill endpoints. Outside the app auth hook: Amazon's signature stands in for the API key.
+  app.register(alexaRoutes, { prefix: "/v1/alexa", apps: alexa.apps, verifier: alexa.verifier, router });
 
   // Authenticated app-facing API. Every route here requires an app's API key, and only
   // ever acts as (or shows) the app that key belongs to.
