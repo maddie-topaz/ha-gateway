@@ -1,6 +1,6 @@
 import type { Logger } from "../logger.js";
 import type { HomeAssistantClient } from "./client.js";
-import type { ServiceTarget } from "./types.js";
+import type { ServiceData, ServiceTarget } from "./types.js";
 
 type ParamType = "string" | "number" | "boolean";
 
@@ -10,7 +10,7 @@ export type ActionDefinition = {
   readonly service: string;
   readonly target?: ServiceTarget;
   /** Fixed service data. Caller params with the same key override these, so they double as defaults. */
-  readonly serviceData?: Record<string, unknown>;
+  readonly data?: ServiceData;
   /** Values the caller may pass, and their types. Anything not listed is rejected. */
   readonly params?: Record<string, ParamType>;
 };
@@ -48,7 +48,7 @@ export const createActionRunner = ({ actions, homeAssistant, logger }: ActionRun
     }
   }
 
-  const parseParams = (action: ActionDefinition, input: unknown): Record<string, unknown> => {
+  const parseParams = (action: ActionDefinition, input: unknown): ServiceData => {
     if (input === undefined || input === null) return {};
     if (typeof input !== "object" || Array.isArray(input)) throw new InvalidActionParamsError(["params must be an object"]);
 
@@ -60,7 +60,8 @@ export const createActionRunner = ({ actions, homeAssistant, logger }: ActionRun
       else if (typeof value !== expected) problems.push(`"${key}" must be a ${expected}`);
     }
     if (problems.length > 0) throw new InvalidActionParamsError(problems);
-    return input as Record<string, unknown>;
+    // Every value was checked to be a string, number or boolean above.
+    return input as ServiceData;
   };
 
   const run = async (name: string, params?: unknown) => {
@@ -70,17 +71,13 @@ export const createActionRunner = ({ actions, homeAssistant, logger }: ActionRun
 
     const values = parseParams(action, params);
     const started = performance.now();
-    try {
-      await homeAssistant.callService({
-        domain: action.domain,
-        service: action.service,
-        target: action.target,
-        serviceData: { ...action.serviceData, ...values },
-      });
-    } catch (err) {
-      log.warn({ action: name, reason: (err as Error).message }, "action failed");
-      throw err;
-    }
+    // callService logs failures, so only success is logged here.
+    await homeAssistant.callService({
+      domain: action.domain,
+      service: action.service,
+      ...(action.target && { target: action.target }),
+      data: { ...action.data, ...values },
+    });
     log.info({ action: name, ms: Math.round(performance.now() - started) }, "action executed");
   };
 

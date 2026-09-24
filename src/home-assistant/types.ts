@@ -31,26 +31,42 @@ export type StateChangedData = {
 
 export type StateChangedEvent = HassEvent<StateChangedData>;
 
+/** Anything that survives a JSON round trip, which is all HA can accept or return. */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly JsonValue[]
+  | { readonly [key: string]: JsonValue };
+
+type OneOrMany = string | readonly string[];
+
+/** Which entities, devices, areas, floors or labels a service call applies to. */
 export type ServiceTarget = {
-  entity_id?: string | string[];
-  device_id?: string | string[];
-  area_id?: string | string[];
-  floor_id?: string | string[];
-  label_id?: string | string[];
+  entity_id?: OneOrMany;
+  device_id?: OneOrMany;
+  area_id?: OneOrMany;
+  floor_id?: OneOrMany;
+  label_id?: OneOrMany;
 };
+
+/** Service-specific fields, e.g. `{ brightness_pct: 30, rgb_color: [145, 50, 255] }`. */
+export type ServiceData = { readonly [key: string]: JsonValue };
 
 export type CallServiceParams = {
   domain: string;
   service: string;
-  serviceData?: Record<string, unknown>;
   target?: ServiceTarget;
+  data?: ServiceData;
   /** Ask HA to return the service's response data (only for services that support it). */
   returnResponse?: boolean;
 };
 
 export type CallServiceResult = {
   context: HassContext;
-  response?: unknown;
+  /** Only present when `returnResponse` was set and the service returns data. */
+  response?: JsonValue;
 };
 
 /** A client→HA command, minus the `id` the connection assigns. */
@@ -74,23 +90,40 @@ export type ConnectionStatus =
   | "auth_failed"
   | "stopped";
 
-export class HomeAssistantNotConnectedError extends Error {
+/**
+ * Base class for every Home Assistant failure, so callers can catch them all with one
+ * `instanceof HomeAssistantError` and branch on the subclass when they need detail.
+ */
+export class HomeAssistantError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = new.target.name;
+  }
+}
+
+/** The gateway has no authenticated connection to HA right now. Safe to retry later. */
+export class HomeAssistantNotConnectedError extends HomeAssistantError {
   constructor() {
     super("Home Assistant is not connected");
-    this.name = "HomeAssistantNotConnectedError";
   }
 }
 
-export class HomeAssistantTimeoutError extends Error {
+/** HA didn't answer in time. The command may or may not have run. */
+export class HomeAssistantTimeoutError extends HomeAssistantError {
   constructor(readonly commandType: string, timeoutMs: number) {
     super(`Home Assistant command "${commandType}" timed out after ${timeoutMs}ms`);
-    this.name = "HomeAssistantTimeoutError";
   }
 }
 
-export class HomeAssistantCommandError extends Error {
+/** HA answered with an error, e.g. `service_not_found` or `invalid_format`. */
+export class HomeAssistantCommandError extends HomeAssistantError {
   constructor(readonly code: string, message: string) {
     super(message);
-    this.name = "HomeAssistantCommandError";
   }
 }
+
+/** HA answered, but not in the shape the API promises. */
+export class HomeAssistantInvalidResponseError extends HomeAssistantError {}
+
+/** The request was rejected before being sent to HA, e.g. a malformed service or entity ID. */
+export class HomeAssistantInvalidRequestError extends HomeAssistantError {}

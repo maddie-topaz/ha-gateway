@@ -1,6 +1,7 @@
-import { notifyMaddiesPhone } from "./shared/actions.js";
-import { zoneActivity } from "./shared/events.js";
-import { defineApp } from "./types.js";
+import {defineApp} from "../types.js";
+import {zoneActivity} from "../shared/events.js";
+import {notifyMaddiesPhone} from "../shared/actions.js";
+
 
 export const camQuest = defineApp({
   name: "cam-quest",

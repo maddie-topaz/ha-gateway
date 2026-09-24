@@ -28,6 +28,7 @@ Your apps never talk to Home Assistant directly and never see the HA token. They
 - [Environment variables](#environment-variables)
 - [HTTP API](#http-api)
 - [How it works](#how-it-works)
+- [Calling Home Assistant from gateway code](#calling-home-assistant-from-gateway-code)
 
 ## Quick start (local)
 
@@ -108,10 +109,10 @@ After that you'll see `normalized event received` for each event and `webhook de
 
 ## Apps
 
-Every app the gateway serves (Cam Quest, a dashboard, whatever comes next) gets its own file in **[`src/apps/`](src/apps/)**. That file is the whole contract between the gateway and the app:
+Every app the gateway serves (Cam Quest, a dashboard, whatever comes next) gets its own folder in **[`src/apps/`](src/apps/)**. Its `index.ts` is the whole contract between the gateway and the app:
 
 ```ts
-// src/apps/cam-quest.ts
+// src/apps/cam-quest/index.ts
 export const camQuest = defineApp({
   name: "cam-quest",
   apiKeyEnv: "CAM_QUEST_API_KEY",
@@ -147,9 +148,9 @@ actions: {
 
 ### Add a new app
 
-1. Copy `src/apps/cam-quest.ts` to a new file, like `src/apps/dashboard.ts`.
+1. Copy the `src/apps/cam-quest/` folder to a new one, like `src/apps/dashboard/`, and rename the export (`camQuest` → `dashboard`).
 2. Change the `name` and the env var names (`DASHBOARD_API_KEY`, `DASHBOARD_WEBHOOK_URL`, …), then pick its events and actions.
-3. Add it to the list in [`src/apps/index.ts`](src/apps/index.ts).
+3. Import it in [`src/apps/index.ts`](src/apps/index.ts) and add it to the `apps` list.
 4. Set its variables in Railway. Generate its API key with `openssl rand -hex 32`. Every app needs a different key, and the gateway won't start if two apps share one.
 5. Push.
 
@@ -179,7 +180,7 @@ export const zoneActivity: StateRule = {
 **To add an event to an app:**
 
 1. Find the entity in HA (**Settings → Devices & services → Entities**) and note its entity ID and device class.
-2. Write the rule. If other apps might want it, put it in `src/apps/shared/events.ts`. If it's only for this app, it can go straight in the app's file.
+2. Write the rule. If other apps might want it, put it in `src/apps/shared/events.ts`. If it's only for this app, it can go in the app's own folder.
 3. Add it to the app's `events` list. Put rules for specific entities *above* broad ones, because the first matching rule wins (checked per app).
 4. Push. Railway redeploys and the new events show up in the logs.
 
@@ -272,7 +273,7 @@ export const notifyMaddiesPhone: ActionDefinition = {
   domain: "notify",
   service: "send_message",
   target: { entity_id: "notify.maddie_s_mobile" },
-  serviceData: { title: "ha-gateway", message: "Test notification from ha-gateway" },
+  data: { title: "ha-gateway", message: "Test notification from ha-gateway" },
   params: { title: "string", message: "string" },
 };
 ```
@@ -281,8 +282,8 @@ export const notifyMaddiesPhone: ActionDefinition = {
 | --- | --- |
 | `domain` + `service` | The HA service to run, like `light.turn_on`. Try it in HA under **Developer tools → Actions** first. |
 | `target` | Which entities it affects. It's fixed, so an app can't point an action at something else. |
-| `serviceData` | Fixed values sent with the call. |
-| `params` | Values the app is allowed to pass, and their type (`"string"`, `"number"` or `"boolean"`). A param with the same name as a `serviceData` value overrides it, so `serviceData` doubles as defaults. |
+| `data` | Fixed values sent with the call. |
+| `params` | Values the app is allowed to pass, and their type (`"string"`, `"number"` or `"boolean"`). A param with the same name as a `data` value overrides it, so `data` doubles as defaults. |
 
 Put actions more than one app might use in `src/apps/shared/actions.ts`. Never add actions for locks, the alarm, sirens, the garage door or camera motion detection. A bug in an app or a leaked key shouldn't be able to open the house.
 
@@ -372,7 +373,7 @@ Actions aren't retried or queued. If HA is down, the call fails straight away wi
 | `PORT` | No | Railway sets this for you. Defaults to `3000` locally. |
 | `HOST` | No | Defaults to `0.0.0.0`. |
 
-Each app adds its own variables, named in its file in `src/apps/`. For Cam Quest:
+Each app adds its own variables, named in its folder in `src/apps/`. For Cam Quest:
 
 | Variable | Description |
 | --- | --- |
@@ -404,14 +405,55 @@ The service refuses to start if anything required is missing or invalid, and the
 src/
 ├── index.ts              Startup, wiring and shutdown
 ├── logger.ts             Structured logging (secrets are redacted)
-├── apps/                 ★ One file per app, plus the list of apps
+├── apps/                 ★ One folder per app, plus the list of apps
 │   └── shared/           ★ Reusable event rules and actions
 ├── config/env.ts         Environment variable validation
 ├── api/                  HTTP server (/health, /v1) and per-app key auth
-├── home-assistant/       Everything HA-specific: connection, subscriptions, commands, actions, rule matching
+├── home-assistant/       Everything HA-specific: connection, service calls and helpers, state queries, actions, rule matching
 └── routing/              Event router, webhook delivery and the event shape
 ```
 
-Scripts: `npm run dev` (local, auto-reloads), `npm run typecheck`, `npm run build` (compiles to `dist/`), `npm start` (runs the build).
+Scripts: `npm run dev` (local, auto-reloads), `npm test`, `npm run typecheck`, `npm run build` (compiles to `dist/`), `npm start` (runs the build).
+
+## Calling Home Assistant from gateway code
+
+This section is for working on the gateway itself. Apps never call these directly: they only get the actions in their folder in `src/apps/`.
+
+Every Home Assistant service call goes through one function, `callService`, in [`src/home-assistant/services.ts`](src/home-assistant/services.ts). It sends the call over the gateway's existing authenticated connection, so nothing else needs the token or knows the wire protocol.
+
+```ts
+await homeAssistant.callService({
+  domain: "light",
+  service: "turn_on",
+  target: { entity_id: "light.living_room" },
+  data: { brightness_pct: 30, rgb_color: [145, 50, 255] },
+});
+```
+
+`target` and `data` are optional. `data` is typed as JSON, so anything that can't be sent to HA won't compile. Set `returnResponse: true` for services that return data, like `weather.get_forecasts`, and read it from `result.response`.
+
+**Helpers** in [`src/home-assistant/service-helpers.ts`](src/home-assistant/service-helpers.ts) cover common calls. They work out the domain from the entity ID:
+
+```ts
+await homeAssistant.turnOn("light.study_lamps", { brightness_pct: 50 });
+await homeAssistant.turnOff("fan.skyfan_dc");
+await homeAssistant.toggle("switch.camputer");
+```
+
+To add a helper (like `setLight`, `activateScene`, `sendNotification` or `playMedia`), add a function to `createServiceHelpers` that builds the arguments and calls `callService` or `callOnEntity`. Don't send anything to HA directly. That keeps errors, logging and validation in one place.
+
+**Errors.** Every failure is a `HomeAssistantError`, so one `instanceof` check catches them all. The subclass tells you what went wrong:
+
+| Error | Meaning |
+| --- | --- |
+| `HomeAssistantInvalidRequestError` | Malformed domain, service or entity ID. Nothing was sent to HA. |
+| `HomeAssistantNotConnectedError` | No connection to HA right now. Safe to retry later. |
+| `HomeAssistantTimeoutError` | HA didn't answer within 10 seconds. The call may or may not have run. |
+| `HomeAssistantCommandError` | HA rejected the call. `code` has HA's error code, like `service_not_found`. |
+| `HomeAssistantInvalidResponseError` | HA answered, but not in the expected shape. |
+
+**Logging.** Failed calls log `ha service call failed` at `warn` with the service name, target and HA's error code. Successful calls log `ha service called` at `debug`. Data values are never logged, only their keys, because they can hold things like message text.
+
+**Tests** use Node's built-in test runner. `npm test` runs every `*.test.ts` file, including one that runs the real connection against a fake Home Assistant server.
 
 If something here is unclear or out of date, open an issue or update this README in the same PR as the change.

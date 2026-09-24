@@ -3,6 +3,8 @@ import { InvalidActionParamsError, UnknownActionError, type ActionRunner } from 
 import type { HomeAssistantClient } from "../home-assistant/client.js";
 import {
   HomeAssistantCommandError,
+  HomeAssistantError,
+  HomeAssistantInvalidRequestError,
   HomeAssistantNotConnectedError,
   HomeAssistantTimeoutError,
 } from "../home-assistant/types.js";
@@ -30,6 +32,9 @@ const actionErrorResponse = (err: unknown) => {
   if (err instanceof HomeAssistantNotConnectedError) return { status: 503, body: { error: "Home Assistant is not connected" } };
   if (err instanceof HomeAssistantTimeoutError) return { status: 504, body: { error: "Home Assistant did not respond in time" } };
   if (err instanceof HomeAssistantCommandError) return { status: 502, body: { error: err.message, code: err.code } };
+  if (err instanceof HomeAssistantInvalidRequestError) return { status: 400, body: { error: err.message } };
+  // Invalid responses and anything else HA-related.
+  if (err instanceof HomeAssistantError) return { status: 502, body: { error: err.message } };
   return undefined;
 };
 

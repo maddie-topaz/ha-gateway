@@ -1,6 +1,8 @@
 import type { Logger } from "../logger.js";
-import { createCommands } from "./commands.js";
 import { createConnection } from "./connection.js";
+import { createServiceHelpers } from "./service-helpers.js";
+import { createServiceCaller } from "./services.js";
+import { createStateQueries } from "./states.js";
 import { createSubscriptionRegistry } from "./subscriptions.js";
 import type { StateChangedData, StateChangedEvent } from "./types.js";
 
@@ -14,7 +16,7 @@ type HomeAssistantClientOptions = {
 export const createHomeAssistantClient = ({ websocketUrl, token, logger }: HomeAssistantClientOptions) => {
   const connection = createConnection({ url: websocketUrl, token, logger });
   const subscriptions = createSubscriptionRegistry({ connection, logger });
-  const commands = createCommands(connection);
+  const callService = createServiceCaller({ transport: connection, logger });
 
   return {
     start: connection.start,
@@ -26,7 +28,10 @@ export const createHomeAssistantClient = ({ websocketUrl, token, logger }: HomeA
     onStateChanged: (handler: (event: StateChangedEvent) => void) =>
       subscriptions.subscribeEvents<StateChangedData>("state_changed", handler),
 
-    ...commands,
+    /** Generic service call. Everything below is built on it. */
+    callService,
+    ...createServiceHelpers(callService),
+    ...createStateQueries(connection),
   };
 };
 
