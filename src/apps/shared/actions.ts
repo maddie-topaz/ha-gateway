@@ -13,14 +13,29 @@
  */
 import type { ActionDefinition } from "../../home-assistant/actions.js";
 
-/** Notification to Maddie's Pixel only. */
-export const notifyMaddiesPhone: ActionDefinition = {
+/**
+ * Sends a notification to one phone, through its notify entity (works for iPhone and Android).
+ * Apps pick the phone: `actions: { notify_cams_phone: phoneNotify("notify.cams_iphone") }`.
+ * The phone is fixed per app; the app can set `title` and `message`, and `defaults` fills in either.
+ *
+ * On an iPhone with Announce Notifications turned on for the Home Assistant app, Siri reads
+ * these out loud through AirPods or CarPlay. That's the closest iPhones get to phoneSay.
+ */
+export const phoneNotify = (
+  notifyEntityId: string,
+  defaults: { title?: string; message?: string } = {},
+): ActionDefinition => ({
   domain: "notify",
   service: "send_message",
-  target: { entity_id: "notify.maddie_s_mobile" },
-  data: { title: "ha-gateway", message: "Test notification from ha-gateway" },
+  target: { entity_id: notifyEntityId },
+  data: { title: "ha-gateway", ...defaults },
   params: { title: "string", message: "string" },
-};
+});
+
+/** Notification to Maddie's Pixel only. */
+export const notifyMaddiesPhone = phoneNotify("notify.maddie_s_mobile", {
+  message: "Test notification from ha-gateway",
+});
 
 /**
  * Makes an Echo say whatever message the app sends. Apps pick the Echo:

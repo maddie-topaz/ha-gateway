@@ -290,11 +290,12 @@ export const notifyMaddiesPhone: ActionDefinition = {
 | Action | What it does | Params |
 | --- | --- | --- |
 | `notifyMaddiesPhone` | Sends a notification to Maddie's Pixel. | `title`, `message` |
+| `phoneNotify(notifyEntityId, defaults?)` | Sends a notification to any phone, e.g. `phoneNotify("notify.cams_iphone")`. On an iPhone with Announce Notifications on for the Home Assistant app, Siri reads it aloud through AirPods or CarPlay. | `title`, `message` |
 | `alexaSay(echoEntityId)` | Makes the chosen Echo say the app's message. Pass `{ type: "tts" }` to skip the announcement chime. **Needs the Alexa Media Player integration, which isn't installed yet.** | `message` |
-| `phoneSay(notifyService)` | Makes an Android phone read the app's message out loud, on media volume. For Maddie's Pixel: `phoneSay("mobile_app_maddie_s_pixel")`. Not supported on iPhones. | `message` |
+| `phoneSay(notifyService)` | Makes an Android phone read the app's message out loud, on media volume. For Maddie's Pixel: `phoneSay("mobile_app_maddie_s_pixel")`. Not supported on iPhones: use `phoneNotify` for those. | `message` |
 | `speakOn(mediaPlayerEntityId)` | Makes a speaker or TV say the app's message using HA's text-to-speech. Candidates: `media_player.upstairs_speaker`, `shield`, `shield_2`, `downstairs`, `coreelec`. Test one before relying on it. | `message` |
 
-`alexaSay`, `phoneSay` and `speakOn` are functions because each app picks its own device: `say_upstairs: speakOn("media_player.upstairs_speaker")`.
+`phoneNotify`, `alexaSay`, `phoneSay` and `speakOn` are functions because each app picks its own device: `say_upstairs: speakOn("media_player.upstairs_speaker")`.
 
 Put actions more than one app might use in `src/apps/shared/actions.ts`. Never add actions for locks, the alarm, sirens, the garage door or camera motion detection. A bug in an app or a leaked key shouldn't be able to open the house.
 

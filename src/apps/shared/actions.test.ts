@@ -4,7 +4,7 @@ import { createActionRunner, InvalidActionParamsError } from "../../home-assista
 import type { CallService } from "../../home-assistant/services.js";
 import type { CallServiceParams } from "../../home-assistant/types.js";
 import { createCapturingLogger, okResult } from "../../test-support/fakes.js";
-import { alexaSay, phoneSay, speakOn } from "./actions.js";
+import { alexaSay, notifyMaddiesPhone, phoneNotify, phoneSay, speakOn } from "./actions.js";
 
 const setup = (actions: Parameters<typeof createActionRunner>[0]["actions"]) => {
   const calls: CallServiceParams[] = [];
@@ -106,5 +106,45 @@ describe("phoneSay", () => {
   it("lists the param as a plain string to apps", () => {
     const { runner } = setup({ say_on_phone: phoneSay("mobile_app_maddie_s_pixel") });
     assert.deepEqual(runner.list(), [{ name: "say_on_phone", params: { message: "string" } }]);
+  });
+});
+
+describe("phoneNotify", () => {
+  it("sends the app's message to the chosen phone's notify entity", async () => {
+    const { runner, calls } = setup({ notify_cams_phone: phoneNotify("notify.cams_iphone", { title: "Cam Quest" }) });
+
+    await runner.run("notify_cams_phone", { message: "Quest complete" });
+
+    assert.deepEqual(calls, [
+      {
+        domain: "notify",
+        service: "send_message",
+        target: { entity_id: "notify.cams_iphone" },
+        data: { title: "Cam Quest", message: "Quest complete" },
+      },
+    ]);
+  });
+
+  it("doesn't let the app pick a different phone", async () => {
+    const { runner, calls } = setup({ notify_cams_phone: phoneNotify("notify.cams_iphone") });
+
+    await assert.rejects(
+      runner.run("notify_cams_phone", { message: "Hi", entity_id: "notify.maddie_s_mobile" }),
+      InvalidActionParamsError,
+    );
+    assert.equal(calls.length, 0);
+  });
+
+  it("keeps notifyMaddiesPhone's existing defaults", async () => {
+    const { runner, calls } = setup({ test_phone_notification: notifyMaddiesPhone });
+
+    await runner.run("test_phone_notification");
+
+    assert.deepEqual(calls[0], {
+      domain: "notify",
+      service: "send_message",
+      target: { entity_id: "notify.maddie_s_mobile" },
+      data: { title: "ha-gateway", message: "Test notification from ha-gateway" },
+    });
   });
 });
