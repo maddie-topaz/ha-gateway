@@ -1,16 +1,19 @@
 # ha-gateway
 
-ha-gateway keeps one always-on connection to Home Assistant and turns what happens in your home into clean events your apps can use. Motion in the hallway, a door opening, a doorbell press: the gateway picks them up, gives them a consistent shape, and POSTs them to whichever app cares.
+ha-gateway keeps one always-on connection to Home Assistant and works in both directions:
+
+- **Events out:** motion in the hallway, a door opening, a doorbell press. The gateway picks these up, gives them a consistent shape, and POSTs them to whichever app cares.
+- **Actions in:** apps ask the gateway to do things like flash a light or run a script. They can only trigger actions you've approved.
 
 ```text
 Home Assistant
       ↕ persistent WebSocket
 ha-gateway (Railway)
-      ↕ HTTP POST
+      ↓ POST events          ↑ POST /v1/actions/<name>
 Cam Quest / future apps
 ```
 
-Your apps never talk to Home Assistant directly and never see the HA token. They just receive events. The gateway doesn't know anything about quests, players or game rules, so the same gateway can serve any number of apps.
+Your apps never talk to Home Assistant directly and never see the HA token. They receive events and call actions, and that's it. The gateway doesn't know anything about quests, players or game rules, so the same gateway can serve any number of apps.
 
 ## Contents
 
@@ -20,6 +23,7 @@ Your apps never talk to Home Assistant directly and never see the HA token. They
 - [Choose which events to listen for](#choose-which-events-to-listen-for)
 - [Send events to your app](#send-events-to-your-app)
 - [Receive events in your app](#receive-events-in-your-app)
+- [Let your app trigger actions](#let-your-app-trigger-actions)
 - [Troubleshooting](#troubleshooting)
 - [Environment variables](#environment-variables)
 - [HTTP API](#http-api)
@@ -233,6 +237,95 @@ app.post("/ha-events", async (request, reply) => {
 
 Heads up, failed deliveries (timeouts or non-2xx responses) are logged as `event consumer failed` but **not retried**. If your app is down, it misses those events.
 
+## Let your app trigger actions
+
+Actions are how apps make things happen in Home Assistant. They live in **[`src/config/actions.ts`](src/config/actions.ts)**, and only the actions listed there can run. Your app calls an action by name and never needs to know entity IDs or HA service names.
+
+### 1. Define an action
+
+Each key is the name your app will call:
+
+```ts
+export const actions = {
+  flash_hallway: {
+    domain: "light",
+    service: "turn_on",
+    target: { entity_id: "light.hallway" },
+    serviceData: { flash: "short" },
+  },
+  set_lounge_brightness: {
+    domain: "light",
+    service: "turn_on",
+    target: { entity_id: "light.lounge" },
+    serviceData: { brightness_pct: 100 },
+    params: { brightness_pct: "number" },
+  },
+} satisfies Record<string, ActionDefinition>;
+```
+
+| Field | Description |
+| --- | --- |
+| `domain` + `service` | The HA service to run, like `light.turn_on`. Try it in HA under **Developer tools → Actions** first. |
+| `target` | Which entities it affects. It's fixed, so your app can't point an action at something else. |
+| `serviceData` | Fixed values sent with the call. |
+| `params` | Values your app is allowed to pass, and their type (`"string"`, `"number"` or `"boolean"`). A param with the same name as a `serviceData` value overrides it, so `serviceData` doubles as defaults. |
+
+Action names must be lowercase letters, numbers and underscores. The file has a few commented-out examples to copy from.
+
+### 2. Set the API key
+
+Actions need `GATEWAY_API_KEY` set in Railway (32+ characters, `openssl rand -hex 32` works). Give the same key to your app. Without it, every `/v1` route returns 503.
+
+### 3. Call it from your app
+
+```bash
+curl -X POST https://YOUR-DOMAIN/v1/actions/flash_hallway \
+  -H "Authorization: Bearer $GATEWAY_API_KEY"
+```
+
+With params:
+
+```bash
+curl -X POST https://YOUR-DOMAIN/v1/actions/set_lounge_brightness \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"params": {"brightness_pct": 40}}'
+```
+
+From TypeScript:
+
+```ts
+const triggerAction = async (name: string, params?: Record<string, unknown>) => {
+  const response = await fetch(`${process.env.HA_GATEWAY_URL}/v1/actions/${name}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${process.env.HA_GATEWAY_API_KEY}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ params }),
+  });
+  if (!response.ok) throw new Error(`Action ${name} failed: ${response.status} ${await response.text()}`);
+};
+
+await triggerAction("flash_hallway");
+```
+
+To see every action and the params it accepts, call `GET /v1/actions` with the same key.
+
+### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | Done. HA accepted the call. Body: `{ "ok": true, "action": "flash_hallway" }` |
+| `400` | Bad params. `problems` lists each one, like `"brightness_pct" must be a number`. |
+| `401` | Missing or wrong API key. |
+| `404` | No action with that name. |
+| `502` | HA rejected the call, usually a typo in the entity ID or service. `code` has HA's error code. |
+| `503` | HA isn't connected right now, or `GATEWAY_API_KEY` isn't set. Safe to retry later. |
+| `504` | HA didn't answer within 10 seconds. |
+
+Actions aren't retried or queued. If HA is down, the call fails straight away with a 503 and your app decides whether to try again.
+
 ## Troubleshooting
 
 | What you see | What to do |
@@ -242,6 +335,8 @@ Heads up, failed deliveries (timeouts or non-2xx responses) are logged as `event
 | Logs repeat `ha connection attempt failed` | Railway can't reach `HA_URL`. Open that URL from your phone on mobile data to check it's public. |
 | `ha socket error` with `ENOTFOUND` | Typo in `HA_URL`, or you're using a local address like `homeassistant.local`. |
 | An entity changes but no event appears | No rule matches it. Check its device class in HA and compare with `eventRules`. Setting `LOG_LEVEL=debug` shows every raw change the gateway receives. |
+| An action returns `503` with "GATEWAY_API_KEY is not configured" | Set `GATEWAY_API_KEY` in Railway and redeploy. |
+| An action returns `502` | HA didn't accept the service call. Check the `domain`, `service` and entity IDs in `src/config/actions.ts` by running the same call in HA under **Developer tools → Actions**. |
 | Events are logged but your app gets nothing | Look for `webhook disabled` (URL variable not set) or `event consumer failed` (your endpoint errored or took longer than 5 seconds). |
 
 ## Environment variables
@@ -252,7 +347,7 @@ Heads up, failed deliveries (timeouts or non-2xx responses) are logged as `event
 | `HA_TOKEN` | Yes | HA long-lived access token. Never logged or sent to apps. |
 | `CAM_QUEST_WEBHOOK_URL` | No | Where Cam Quest events are POSTed. |
 | `CAM_QUEST_WEBHOOK_SECRET` | No | Sent as `Authorization: Bearer …` with those POSTs. |
-| `GATEWAY_API_KEY` | No | Key (32+ characters) for the authenticated `/v1` routes. Without it they return 503. |
+| `GATEWAY_API_KEY` | For actions | Key (32+ characters) your apps send to use `/v1` routes, including actions. Without it they return 503. |
 | `LOG_LEVEL` | No | `info` by default. `debug` also logs raw HA events. |
 | `PORT` | No | Railway sets this for you. Defaults to `3000` locally. |
 | `HOST` | No | Defaults to `0.0.0.0`. |
@@ -265,24 +360,17 @@ The service refuses to start if anything required is missing or invalid, and the
 | --- | --- | --- |
 | `GET /health` | None | Service and HA connection status. |
 | `GET /v1/status` | `Authorization: Bearer <GATEWAY_API_KEY>` | More detail: HA version, active subscriptions, registered apps. |
-
-Command endpoints (for example, letting an app turn on a light) aren't exposed yet. When they're added, they'll go in the `/v1` scope in [`src/api/server.ts`](src/api/server.ts) so they're protected by the API key, and they'll only allow specific services and entities rather than anything in HA. Inside the gateway, commands already work through the client:
-
-```ts
-await homeAssistant.callService({
-  domain: "light",
-  service: "turn_on",
-  target: { entity_id: "light.lounge" },
-});
-```
+| `GET /v1/actions` | `Authorization: Bearer <GATEWAY_API_KEY>` | Lists every action and the params it accepts. |
+| `POST /v1/actions/:name` | `Authorization: Bearer <GATEWAY_API_KEY>` | Runs an action. See [Let your app trigger actions](#let-your-app-trigger-actions). |
 
 ## How it works
 
 1. The gateway opens a WebSocket to HA, authenticates with the token and subscribes to `state_changed`.
 2. Each change is checked against `eventRules`. Matches become gateway events and everything else is dropped.
 3. Every event is logged and POSTed to any app whose `webhooks` entry lists that event type.
-4. A ping every 30 seconds catches dead connections. If the connection drops, the gateway reconnects with exponential backoff (1 second, doubling up to 60), then re-subscribes automatically.
-5. On shutdown (`SIGTERM` from Railway), it closes the HTTP server and the HA connection cleanly.
+4. When an app calls `POST /v1/actions/<name>`, the gateway checks the API key and the params, then runs that action's service call over the same HA connection.
+5. A ping every 30 seconds catches dead connections. If the connection drops, the gateway reconnects with exponential backoff (1 second, doubling up to 60), then re-subscribes automatically.
+6. On shutdown (`SIGTERM` from Railway), it closes the HTTP server and the HA connection cleanly.
 
 ```text
 src/
@@ -290,9 +378,10 @@ src/
 ├── logger.ts             Structured logging (secrets are redacted)
 ├── config/
 │   ├── events.ts         ★ What to listen for and where to send it
+│   ├── actions.ts        ★ What apps are allowed to make HA do
 │   └── env.ts            Environment variable validation
 ├── api/                  HTTP server (/health, /v1) and API key auth
-├── home-assistant/       Everything HA-specific: connection, subscriptions, commands, rule matching
+├── home-assistant/       Everything HA-specific: connection, subscriptions, commands, actions, rule matching
 └── routing/              Event router, webhook delivery and the event shape
 ```
 

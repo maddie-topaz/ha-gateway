@@ -1,6 +1,8 @@
 import { createServer } from "./api/server.js";
 import { ConfigError, loadConfig, type Config } from "./config/env.js";
+import { actions as actionDefinitions } from "./config/actions.js";
 import { eventRules } from "./config/events.js";
+import { createActionRunner } from "./home-assistant/actions.js";
 import { createHomeAssistantClient } from "./home-assistant/client.js";
 import { createStateChangeNormalizer } from "./home-assistant/events.js";
 import { createLogger } from "./logger.js";
@@ -54,7 +56,12 @@ const main = async () => {
     if (normalized) router.route(normalized);
   });
 
-  const server = createServer({ logger, homeAssistant, router, gatewayApiKey: config.gatewayApiKey });
+  const actions = createActionRunner({ actions: actionDefinitions, homeAssistant, logger });
+  if (actions.count() > 0 && !config.gatewayApiKey) {
+    logger.warn({ actions: actions.count() }, "actions are configured but GATEWAY_API_KEY is not set, so apps can't call them");
+  }
+
+  const server = createServer({ logger, homeAssistant, router, actions, gatewayApiKey: config.gatewayApiKey });
 
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
