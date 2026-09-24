@@ -1,9 +1,12 @@
-/**
- * Application-level events the gateway publishes. This is the contract consumers
- * (Cam Quest, dashboards, …) depend on, so it deliberately hides raw HA payload shapes.
- */
+import type { EventType } from "../config/events.js";
 
-type EntityEventBase = {
+/**
+ * Application-level event the gateway publishes. This is the contract consumers
+ * (Cam Quest, dashboards, …) depend on, so it deliberately hides raw HA payload shapes.
+ * Event types are defined by the rules in src/config/events.ts.
+ */
+export type GatewayEvent<TType extends string = string> = {
+  type: TType;
   entityId: string;
   /** Human-readable name from HA's friendly_name, if set. */
   name?: string;
@@ -11,14 +14,8 @@ type EntityEventBase = {
   previousState: string | null;
   /** ISO 8601 timestamp of when the state changed in HA. */
   timestamp: string;
+  /** Extra fields from the rule's `data` function. */
+  data?: Record<string, unknown>;
 };
 
-/** Motion, occupancy or presence detected / cleared. */
-export type ZoneActivityEvent = EntityEventBase & { type: "ZONE_ACTIVITY"; active: boolean };
-
-/** Door, window, garage door or other opening opened / closed. */
-export type ContactChangedEvent = EntityEventBase & { type: "CONTACT_CHANGED"; open: boolean };
-
-export type NormalizedEvent = ZoneActivityEvent | ContactChangedEvent;
-
-export type NormalizedEventType = NormalizedEvent["type"];
+export type NormalizedEvent = GatewayEvent<EventType>;

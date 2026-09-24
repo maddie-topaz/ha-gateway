@@ -1,9 +1,11 @@
 import { createServer } from "./api/server.js";
 import { ConfigError, loadConfig, type Config } from "./config/env.js";
+import { eventRules } from "./config/events.js";
 import { createHomeAssistantClient } from "./home-assistant/client.js";
 import { createStateChangeNormalizer } from "./home-assistant/events.js";
 import { createLogger } from "./logger.js";
 import { createEventRouter, createLogConsumer } from "./routing/event-router.js";
+import { createWebhookConsumer } from "./routing/webhook.js";
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -38,8 +40,14 @@ const main = async () => {
 
   const router = createEventRouter({ logger });
   router.register(createLogConsumer(logger));
+  for (const webhook of config.webhooks) {
+    router.register(createWebhookConsumer({ ...webhook, logger }));
+  }
+  for (const { name, urlEnv } of config.disabledWebhooks) {
+    logger.warn({ webhook: name, urlEnv }, "webhook disabled: URL env var not set");
+  }
 
-  const normalize = createStateChangeNormalizer();
+  const normalize = createStateChangeNormalizer(eventRules);
   void homeAssistant.onStateChanged((event) => {
     logger.debug({ event }, "ha state_changed received");
     const normalized = normalize(event);

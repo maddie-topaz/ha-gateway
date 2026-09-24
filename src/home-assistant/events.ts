@@ -1,4 +1,4 @@
-import type { NormalizedEvent } from "../routing/types.js";
+import type { GatewayEvent } from "../routing/types.js";
 import type { HassEntityState, StateChangedEvent } from "./types.js";
 
 /** A state_changed event where the state value itself changed (not just attributes). */
@@ -10,34 +10,22 @@ export type StateTransition = {
   to: HassEntityState;
 };
 
-/** Turns a transition into an app-level event, or returns null if it doesn't apply. */
-export type Normalizer = (transition: StateTransition) => NormalizedEvent | null;
+/** Declarative rule turning matching HA state changes into a gateway event. See src/config/events.ts. */
+export type StateRule<TType extends string = string> = {
+  readonly type: TType;
+  /** Every condition given must match. Omitted conditions match anything. */
+  readonly match: {
+    readonly domain?: readonly string[];
+    readonly deviceClass?: readonly string[];
+    readonly entityId?: readonly string[];
+    /** Only fire when the entity changes *to* one of these states. */
+    readonly toState?: readonly string[];
+  };
+  /** Extra fields to include on the event, derived from the change. */
+  readonly data?: (transition: StateTransition) => Record<string, unknown>;
+};
 
 const IGNORED_STATES = new Set(["unavailable", "unknown"]);
-
-const baseFields = ({ entityId, from, to }: StateTransition) => ({
-  entityId,
-  ...(typeof to.attributes.friendly_name === "string" && { name: to.attributes.friendly_name }),
-  state: to.state,
-  previousState: from?.state ?? null,
-  timestamp: to.last_changed,
-});
-
-const ZONE_DEVICE_CLASSES = new Set(["motion", "occupancy", "presence"]);
-
-export const zoneActivity: Normalizer = (transition) =>
-  transition.domain === "binary_sensor" && ZONE_DEVICE_CLASSES.has(transition.deviceClass ?? "")
-    ? { type: "ZONE_ACTIVITY", ...baseFields(transition), active: transition.to.state === "on" }
-    : null;
-
-const CONTACT_DEVICE_CLASSES = new Set(["door", "window", "garage_door", "opening"]);
-
-export const contactChanged: Normalizer = (transition) =>
-  transition.domain === "binary_sensor" && CONTACT_DEVICE_CLASSES.has(transition.deviceClass ?? "")
-    ? { type: "CONTACT_CHANGED", ...baseFields(transition), open: transition.to.state === "on" }
-    : null;
-
-export const defaultNormalizers: Normalizer[] = [zoneActivity, contactChanged];
 
 /** Extracts a real state transition, filtering attribute-only updates, removals and unavailable/unknown noise. */
 export const toTransition = (event: StateChangedEvent): StateTransition | null => {
@@ -56,18 +44,33 @@ export const toTransition = (event: StateChangedEvent): StateTransition | null =
   };
 };
 
-/**
- * Builds a state_changed → NormalizedEvent function. The first normalizer that matches wins;
- * add new event types by writing a Normalizer and putting it in the list.
- */
+const allows = (allowed: readonly string[] | undefined, value: string | undefined) =>
+  allowed === undefined || (value !== undefined && allowed.includes(value));
+
+const matches = ({ match }: StateRule, t: StateTransition) =>
+  allows(match.domain, t.domain) &&
+  allows(match.deviceClass, t.deviceClass) &&
+  allows(match.entityId, t.entityId) &&
+  allows(match.toState, t.to.state);
+
+/** Builds a state_changed → GatewayEvent function from rules. The first matching rule wins. */
 export const createStateChangeNormalizer =
-  (normalizers: Normalizer[] = defaultNormalizers) =>
-  (event: StateChangedEvent): NormalizedEvent | null => {
+  <TType extends string>(rules: readonly StateRule<TType>[]) =>
+  (event: StateChangedEvent): GatewayEvent<TType> | null => {
     const transition = toTransition(event);
     if (!transition) return null;
-    for (const normalize of normalizers) {
-      const normalized = normalize(transition);
-      if (normalized) return normalized;
-    }
-    return null;
+
+    const rule = rules.find((r) => matches(r, transition));
+    if (!rule) return null;
+
+    const { entityId, from, to } = transition;
+    return {
+      type: rule.type,
+      entityId,
+      ...(typeof to.attributes.friendly_name === "string" && { name: to.attributes.friendly_name }),
+      state: to.state,
+      previousState: from?.state ?? null,
+      timestamp: to.last_changed,
+      ...(rule.data && { data: rule.data(transition) }),
+    };
   };

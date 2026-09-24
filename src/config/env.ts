@@ -1,4 +1,6 @@
 import { existsSync } from "node:fs";
+import type { WebhookDestination } from "../routing/webhook.js";
+import { webhooks, type EventType } from "./events.js";
 
 const LOG_LEVELS = ["fatal", "error", "warn", "info", "debug", "trace", "silent"] as const;
 type LogLevel = (typeof LOG_LEVELS)[number];
@@ -16,6 +18,17 @@ export type Config = {
   };
   /** Shared secret for authenticated app-facing routes. Undefined means those routes are disabled. */
   gatewayApiKey: string | undefined;
+  /** Webhook destinations from src/config/events.ts whose URL env var is set. */
+  webhooks: ResolvedWebhook[];
+  /** Webhook destinations skipped because their URL env var is unset. */
+  disabledWebhooks: { name: string; urlEnv: string }[];
+};
+
+export type ResolvedWebhook = {
+  name: string;
+  events: readonly EventType[];
+  url: string;
+  secret: string | undefined;
 };
 
 export class ConfigError extends Error {
@@ -41,6 +54,36 @@ const toWebSocketUrl = (raw: string): string => {
   url.search = "";
   url.hash = "";
   return url.toString();
+};
+
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+const resolveWebhooks = (read: (name: string) => string | undefined, problems: string[]) => {
+  const resolved: ResolvedWebhook[] = [];
+  const disabled: Config["disabledWebhooks"] = [];
+
+  const destinations: readonly WebhookDestination<EventType>[] = webhooks;
+  for (const { name, events, urlEnv, secretEnv } of destinations) {
+    const url = read(urlEnv);
+    if (!url) {
+      disabled.push({ name, urlEnv });
+      continue;
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      problems.push(`${urlEnv} is not a valid URL`);
+      continue;
+    }
+    if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && LOCAL_HOSTS.has(parsed.hostname))) {
+      problems.push(`${urlEnv} must use https (http is only allowed for localhost)`);
+      continue;
+    }
+    resolved.push({ name, events, url, secret: secretEnv ? read(secretEnv) : undefined });
+  }
+
+  return { resolved, disabled };
 };
 
 /** Loads a local .env for development. Existing environment variables (e.g. Railway's) take precedence. */
@@ -83,6 +126,8 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): Config => {
     problems.push(`GATEWAY_API_KEY must be at least ${MIN_API_KEY_LENGTH} characters when set`);
   }
 
+  const webhookConfig = resolveWebhooks(read, problems);
+
   if (problems.length > 0) throw new ConfigError(problems);
 
   return {
@@ -91,5 +136,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): Config => {
     logLevel: rawLogLevel as LogLevel,
     homeAssistant: { websocketUrl, token: haToken! },
     gatewayApiKey: apiKey,
+    webhooks: webhookConfig.resolved,
+    disabledWebhooks: webhookConfig.disabled,
   };
 };
