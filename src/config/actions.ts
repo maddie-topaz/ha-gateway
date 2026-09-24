@@ -23,6 +23,15 @@ import type { ActionDefinition } from "../home-assistant/actions.js";
  *   A param with the same key as serviceData overrides it, so serviceData works as defaults.
  */
 export const actions = {
+  // Sends a notification to Maddie's Pixel only: the target is fixed, so callers can't pick another device.
+  test_phone_notification: {
+    domain: "notify",
+    service: "send_message",
+    target: { entity_id: "notify.maddie_s_mobile" },
+    serviceData: { title: "ha-gateway", message: "Test notification from ha-gateway" },
+    params: { title: "string", message: "string" },
+  },
+
   // Examples: uncomment and change the entity IDs to match your HA.
   //
   // flash_hallway: {
