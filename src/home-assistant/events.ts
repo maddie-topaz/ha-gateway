@@ -10,7 +10,7 @@ export type StateTransition = {
   to: HassEntityState;
 };
 
-/** Declarative rule turning matching HA state changes into a gateway event. See src/config/events.ts. */
+/** Declarative rule turning matching HA state changes into a gateway event. Apps list theirs in src/apps/. */
 export type StateRule<TType extends string = string> = {
   readonly type: TType;
   /** Every condition given must match. Omitted conditions match anything. */

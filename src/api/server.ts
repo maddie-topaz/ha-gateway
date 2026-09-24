@@ -1,4 +1,4 @@
-import Fastify, { LogController } from "fastify";
+import Fastify, { LogController, type FastifyRequest } from "fastify";
 import { InvalidActionParamsError, UnknownActionError, type ActionRunner } from "../home-assistant/actions.js";
 import type { HomeAssistantClient } from "../home-assistant/client.js";
 import {
@@ -8,14 +8,19 @@ import {
 } from "../home-assistant/types.js";
 import type { Logger } from "../logger.js";
 import type { EventRouter } from "../routing/event-router.js";
-import { createApiKeyAuth } from "./auth.js";
+import { createAppAuth } from "./auth.js";
+
+type ServerApp = {
+  name: string;
+  apiKey: string | undefined;
+  actions: ActionRunner;
+};
 
 type ServerOptions = {
   logger: Logger;
   homeAssistant: HomeAssistantClient;
   router: EventRouter;
-  actions: ActionRunner;
-  gatewayApiKey: string | undefined;
+  apps: ServerApp[];
 };
 
 /** Maps action failures to HTTP responses so apps can tell "HA is down" from "you sent bad params". */
@@ -28,7 +33,9 @@ const actionErrorResponse = (err: unknown) => {
   return undefined;
 };
 
-export const createServer = ({ logger, homeAssistant, router, actions, gatewayApiKey }: ServerOptions) => {
+export const createServer = ({ logger, homeAssistant, router, apps }: ServerOptions) => {
+  const appsByName = new Map(apps.map((a) => [a.name, a]));
+
   const app = Fastify({
     loggerInstance: logger.child({ component: "http" }),
     // Health checks would drown out everything else.
@@ -36,6 +43,7 @@ export const createServer = ({ logger, homeAssistant, router, actions, gatewayAp
     trustProxy: true,
     bodyLimit: 64 * 1024,
   });
+  app.decorateRequest("gatewayApp", null);
 
   /**
    * Public liveness check for Railway. Always 200 while the process is serving: a Home Assistant
@@ -51,25 +59,30 @@ export const createServer = ({ logger, homeAssistant, router, actions, gatewayAp
     };
   });
 
-  // Authenticated app-facing API. Everything in this scope requires GATEWAY_API_KEY.
+  // Authenticated app-facing API. Every route here requires an app's API key, and only
+  // ever acts as (or shows) the app that key belongs to.
   app.register(
     async (v1) => {
-      v1.addHook("preHandler", createApiKeyAuth(gatewayApiKey));
+      v1.addHook("preHandler", createAppAuth(apps));
 
-      v1.get("/status", async () => ({
+      // The auth hook guarantees gatewayApp is a known app name.
+      const callingApp = (request: FastifyRequest) => appsByName.get(request.gatewayApp!)!;
+
+      v1.get("/status", async (request) => ({
+        app: request.gatewayApp,
         homeAssistant: homeAssistant.getStatus(),
         consumers: router.consumers(),
         uptimeSeconds: Math.round(process.uptime()),
       }));
 
-      v1.get("/actions", async () => ({ actions: actions.list() }));
+      v1.get("/actions", async (request) => ({ app: request.gatewayApp, actions: callingApp(request).actions.list() }));
 
       v1.post<{ Params: { name: string }; Body: { params?: unknown } | undefined }>(
         "/actions/:name",
         async (request, reply) => {
           const { name } = request.params;
           try {
-            await actions.run(name, request.body?.params);
+            await callingApp(request).actions.run(name, request.body?.params);
             return { ok: true, action: name };
           } catch (err) {
             const response = actionErrorResponse(err);

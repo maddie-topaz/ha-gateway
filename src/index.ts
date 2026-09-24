@@ -1,7 +1,5 @@
 import { createServer } from "./api/server.js";
 import { ConfigError, loadConfig, type Config } from "./config/env.js";
-import { actions as actionDefinitions } from "./config/actions.js";
-import { eventRules } from "./config/events.js";
 import { createActionRunner } from "./home-assistant/actions.js";
 import { createHomeAssistantClient } from "./home-assistant/client.js";
 import { createStateChangeNormalizer } from "./home-assistant/events.js";
@@ -27,9 +25,10 @@ const main = async () => {
   const haUrl = new URL(config.homeAssistant.websocketUrl);
 
   logger.info(
-    { node: process.version, haHost: haUrl.host, apiEnabled: config.gatewayApiKey !== undefined },
+    { node: process.version, haHost: haUrl.host, apps: config.apps.map((a) => a.definition.name) },
     "service starting",
   );
+  for (const warning of config.warnings) logger.warn(warning);
   if (haUrl.protocol === "ws:" && !["localhost", "127.0.0.1", "::1"].includes(haUrl.hostname)) {
     logger.warn({ haHost: haUrl.host }, "HA_URL is not using TLS; the access token is sent unencrypted");
   }
@@ -42,26 +41,32 @@ const main = async () => {
 
   const router = createEventRouter({ logger });
   router.register(createLogConsumer(logger));
-  for (const webhook of config.webhooks) {
-    router.register(createWebhookConsumer({ ...webhook, logger }));
-  }
-  for (const { name, urlEnv } of config.disabledWebhooks) {
-    logger.warn({ webhook: name, urlEnv }, "webhook disabled: URL env var not set");
-  }
 
-  const normalize = createStateChangeNormalizer(eventRules);
-  void homeAssistant.onStateChanged((event) => {
-    logger.debug({ event }, "ha state_changed received");
-    const normalized = normalize(event);
-    if (normalized) router.route(normalized);
+  // Each app has its own rules, so every HA change is checked against every app separately.
+  const pipelines = config.apps.map(({ definition, webhook }) => {
+    if (webhook) router.register(createWebhookConsumer({ app: definition.name, ...webhook, logger }));
+    return { app: definition.name, normalize: createStateChangeNormalizer(definition.events ?? []) };
   });
 
-  const actions = createActionRunner({ actions: actionDefinitions, homeAssistant, logger });
-  if (actions.count() > 0 && !config.gatewayApiKey) {
-    logger.warn({ actions: actions.count() }, "actions are configured but GATEWAY_API_KEY is not set, so apps can't call them");
-  }
+  void homeAssistant.onStateChanged((event) => {
+    logger.debug({ event }, "ha state_changed received");
+    for (const { app, normalize } of pipelines) {
+      const normalized = normalize(event);
+      if (normalized) router.route(app, normalized);
+    }
+  });
 
-  const server = createServer({ logger, homeAssistant, router, actions, gatewayApiKey: config.gatewayApiKey });
+  const serverApps = config.apps.map(({ definition, apiKey }) => ({
+    name: definition.name,
+    apiKey,
+    actions: createActionRunner({
+      actions: definition.actions ?? {},
+      homeAssistant,
+      logger: logger.child({ app: definition.name }),
+    }),
+  }));
+
+  const server = createServer({ logger, homeAssistant, router, apps: serverApps });
 
   let shuttingDown = false;
   const shutdown = async (signal: string) => {

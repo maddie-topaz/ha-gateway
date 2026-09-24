@@ -1,9 +1,7 @@
-import type { EventType } from "../config/events.js";
-
 /**
- * Application-level event the gateway publishes. This is the contract consumers
- * (Cam Quest, dashboards, …) depend on, so it deliberately hides raw HA payload shapes.
- * Event types are defined by the rules in src/config/events.ts.
+ * Application-level event the gateway publishes. This is the contract apps
+ * depend on, so it deliberately hides raw HA payload shapes. Event types come
+ * from each app's rules in src/apps/.
  */
 export type GatewayEvent<TType extends string = string> = {
   type: TType;
@@ -17,5 +15,3 @@ export type GatewayEvent<TType extends string = string> = {
   /** Extra fields from the rule's `data` function. */
   data?: Record<string, unknown>;
 };
-
-export type NormalizedEvent = GatewayEvent<EventType>;

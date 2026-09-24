@@ -4,7 +4,7 @@ import type { ServiceTarget } from "./types.js";
 
 type ParamType = "string" | "number" | "boolean";
 
-/** A named, pre-approved HA service call that apps may trigger. See src/config/actions.ts. */
+/** A named, pre-approved HA service call that apps may trigger. Apps list theirs in src/apps/. */
 export type ActionDefinition = {
   readonly domain: string;
   readonly service: string;

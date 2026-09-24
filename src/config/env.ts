@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import type { WebhookDestination } from "../routing/webhook.js";
-import { webhooks, type EventType } from "./events.js";
+import { apps } from "../apps/index.js";
+import type { AppDefinition } from "../apps/types.js";
 
 const LOG_LEVELS = ["fatal", "error", "warn", "info", "debug", "trace", "silent"] as const;
 type LogLevel = (typeof LOG_LEVELS)[number];
@@ -16,19 +16,18 @@ export type Config = {
     websocketUrl: string;
     token: string;
   };
-  /** Shared secret for authenticated app-facing routes. Undefined means those routes are disabled. */
-  gatewayApiKey: string | undefined;
-  /** Webhook destinations from src/config/events.ts whose URL env var is set. */
-  webhooks: ResolvedWebhook[];
-  /** Webhook destinations skipped because their URL env var is unset. */
-  disabledWebhooks: { name: string; urlEnv: string }[];
+  /** Apps from src/apps/ with their secrets resolved from env vars. */
+  apps: ResolvedApp[];
+  /** Non-fatal config issues to log at startup. */
+  warnings: string[];
 };
 
-export type ResolvedWebhook = {
-  name: string;
-  events: readonly EventType[];
-  url: string;
-  secret: string | undefined;
+export type ResolvedApp = {
+  definition: AppDefinition;
+  /** Undefined means the app can't authenticate, so it can't call actions. */
+  apiKey: string | undefined;
+  /** Undefined means the app's events are only logged. */
+  webhook: { url: string; secret: string | undefined } | undefined;
 };
 
 export class ConfigError extends Error {
@@ -58,32 +57,59 @@ const toWebSocketUrl = (raw: string): string => {
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-const resolveWebhooks = (read: (name: string) => string | undefined, problems: string[]) => {
-  const resolved: ResolvedWebhook[] = [];
-  const disabled: Config["disabledWebhooks"] = [];
+const APP_NAME = /^[a-z0-9-]+$/;
 
-  const destinations: readonly WebhookDestination<EventType>[] = webhooks;
-  for (const { name, events, urlEnv, secretEnv } of destinations) {
-    const url = read(urlEnv);
-    if (!url) {
-      disabled.push({ name, urlEnv });
-      continue;
-    }
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      problems.push(`${urlEnv} is not a valid URL`);
-      continue;
-    }
-    if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && LOCAL_HOSTS.has(parsed.hostname))) {
-      problems.push(`${urlEnv} must use https (http is only allowed for localhost)`);
-      continue;
-    }
-    resolved.push({ name, events, url, secret: secretEnv ? read(secretEnv) : undefined });
+const resolveWebhookUrl = (urlEnv: string, url: string, problems: string[]) => {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    problems.push(`${urlEnv} is not a valid URL`);
+    return undefined;
   }
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && LOCAL_HOSTS.has(parsed.hostname))) {
+    problems.push(`${urlEnv} must use https (http is only allowed for localhost)`);
+    return undefined;
+  }
+  return url;
+};
 
-  return { resolved, disabled };
+const resolveApps = (read: (name: string) => string | undefined, problems: string[], warnings: string[]) => {
+  const names = new Set<string>();
+  const keyOwners = new Map<string, string>();
+
+  return apps.map((definition): ResolvedApp => {
+    const { name, apiKeyEnv, webhook } = definition;
+    if (!APP_NAME.test(name)) problems.push(`App name "${name}" must be lowercase letters, numbers and dashes`);
+    if (names.has(name)) problems.push(`Two apps are named "${name}"`);
+    names.add(name);
+
+    const apiKey = read(apiKeyEnv);
+    if (apiKey === undefined) {
+      if (Object.keys(definition.actions ?? {}).length > 0) {
+        warnings.push(`${name}: ${apiKeyEnv} is not set, so ${name} can't call its actions`);
+      }
+    } else if (apiKey.length < MIN_API_KEY_LENGTH) {
+      problems.push(`${apiKeyEnv} must be at least ${MIN_API_KEY_LENGTH} characters`);
+    } else if (keyOwners.has(apiKey)) {
+      // The key is how the gateway tells apps apart, so it must be unique.
+      problems.push(`${apiKeyEnv} is the same key as ${keyOwners.get(apiKey)}'s; every app needs its own key`);
+    } else {
+      keyOwners.set(apiKey, name);
+    }
+
+    let resolvedWebhook: ResolvedApp["webhook"];
+    if (webhook) {
+      const url = read(webhook.urlEnv);
+      if (!url) warnings.push(`${name}: ${webhook.urlEnv} is not set, so ${name}'s events are only logged`);
+      else {
+        const valid = resolveWebhookUrl(webhook.urlEnv, url, problems);
+        if (valid) resolvedWebhook = { url: valid, secret: webhook.secretEnv ? read(webhook.secretEnv) : undefined };
+      }
+    }
+
+    return { definition, apiKey, webhook: resolvedWebhook };
+  });
 };
 
 /** Loads a local .env for development. Existing environment variables (e.g. Railway's) take precedence. */
@@ -99,7 +125,6 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): Config => {
 
   const haUrl = read("HA_URL");
   const haToken = read("HA_TOKEN");
-  const apiKey = read("GATEWAY_API_KEY");
   const rawPort = read("PORT") ?? "3000";
   const rawLogLevel = read("LOG_LEVEL") ?? "info";
 
@@ -122,11 +147,11 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): Config => {
 
   if (!LOG_LEVELS.includes(rawLogLevel as LogLevel)) problems.push(`LOG_LEVEL must be one of ${LOG_LEVELS.join(", ")}`);
 
-  if (apiKey !== undefined && apiKey.length < MIN_API_KEY_LENGTH) {
-    problems.push(`GATEWAY_API_KEY must be at least ${MIN_API_KEY_LENGTH} characters when set`);
+  const warnings: string[] = [];
+  if (read("GATEWAY_API_KEY")) {
+    warnings.push("GATEWAY_API_KEY is no longer used: each app now has its own key (see src/apps/). You can delete it");
   }
-
-  const webhookConfig = resolveWebhooks(read, problems);
+  const resolvedApps = resolveApps(read, problems, warnings);
 
   if (problems.length > 0) throw new ConfigError(problems);
 
@@ -135,8 +160,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): Config => {
     host: read("HOST") ?? "0.0.0.0",
     logLevel: rawLogLevel as LogLevel,
     homeAssistant: { websocketUrl, token: haToken! },
-    gatewayApiKey: apiKey,
-    webhooks: webhookConfig.resolved,
-    disabledWebhooks: webhookConfig.disabled,
+    apps: resolvedApps,
+    warnings,
   };
 };

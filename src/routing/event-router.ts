@@ -1,17 +1,17 @@
 import type { Logger } from "../logger.js";
-import type { NormalizedEvent } from "./types.js";
+import type { GatewayEvent } from "./types.js";
 
 /**
- * Something that wants normalized events: Cam Quest, a dashboard, a logger, etc.
- * `accepts` lets a consumer opt in to a subset; omit it to receive everything.
+ * Something that wants events: an app's webhook, a logger, etc.
+ * Set `app` to receive only that app's events; omit it to receive every app's events.
  */
 export type EventConsumer = {
   name: string;
-  accepts?: (event: NormalizedEvent) => boolean;
-  handle: (event: NormalizedEvent) => void | Promise<void>;
+  app?: string;
+  handle: (event: GatewayEvent, app: string) => void | Promise<void>;
 };
 
-/** Fans normalized events out to registered consumers. A failing consumer never affects the others. */
+/** Delivers each app's events to its consumers. A failing consumer never affects the others. */
 export const createEventRouter = ({ logger }: { logger: Logger }) => {
   const log = logger.child({ component: "event-router" });
   const consumers = new Map<string, EventConsumer>();
@@ -19,23 +19,24 @@ export const createEventRouter = ({ logger }: { logger: Logger }) => {
   const register = (consumer: EventConsumer) => {
     if (consumers.has(consumer.name)) throw new Error(`Event consumer "${consumer.name}" is already registered`);
     consumers.set(consumer.name, consumer);
-    log.info({ consumer: consumer.name }, "event consumer registered");
+    log.info({ consumer: consumer.name, app: consumer.app }, "event consumer registered");
     return () => {
       consumers.delete(consumer.name);
     };
   };
 
-  const deliver = async (consumer: EventConsumer, event: NormalizedEvent) => {
+  const deliver = async (consumer: EventConsumer, event: GatewayEvent, app: string) => {
     try {
-      if (consumer.accepts && !consumer.accepts(event)) return;
-      await consumer.handle(event);
+      await consumer.handle(event, app);
     } catch (err) {
-      log.error({ err, consumer: consumer.name, eventType: event.type }, "event consumer failed");
+      log.error({ err, consumer: consumer.name, app, eventType: event.type }, "event consumer failed");
     }
   };
 
-  const route = (event: NormalizedEvent) => {
-    for (const consumer of consumers.values()) void deliver(consumer, event);
+  const route = (app: string, event: GatewayEvent) => {
+    for (const consumer of consumers.values()) {
+      if (consumer.app === undefined || consumer.app === app) void deliver(consumer, event, app);
+    }
   };
 
   return { register, route, consumers: () => [...consumers.keys()] };
@@ -43,8 +44,8 @@ export const createEventRouter = ({ logger }: { logger: Logger }) => {
 
 export type EventRouter = ReturnType<typeof createEventRouter>;
 
-/** Logs every normalized event. Useful on its own until real consumers exist. */
+/** Logs every app's events. */
 export const createLogConsumer = (logger: Logger): EventConsumer => ({
   name: "log",
-  handle: (event) => logger.info({ event }, "normalized event received"),
+  handle: (event, app) => logger.info({ app, event }, "normalized event received"),
 });
