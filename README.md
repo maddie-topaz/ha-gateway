@@ -283,7 +283,18 @@ export const notifyMaddiesPhone: ActionDefinition = {
 | `domain` + `service` | The HA service to run, like `light.turn_on`. Try it in HA under **Developer tools → Actions** first. |
 | `target` | Which entities it affects. It's fixed, so an app can't point an action at something else. |
 | `data` | Fixed values sent with the call. |
-| `params` | Values the app is allowed to pass, and their type (`"string"`, `"number"` or `"boolean"`). A param with the same name as a `data` value overrides it, so `data` doubles as defaults. |
+| `params` | Values the app is allowed to pass, and their type (`"string"`, `"number"` or `"boolean"`). A param with the same name as a `data` value overrides it, so `data` doubles as defaults. If the value needs to go somewhere nested, give it a path: `{ type: "string", path: ["data", "tts_text"] }`. |
+
+**Shared actions available now** (in [`src/apps/shared/actions.ts`](src/apps/shared/actions.ts)):
+
+| Action | What it does | Params |
+| --- | --- | --- |
+| `notifyMaddiesPhone` | Sends a notification to Maddie's Pixel. | `title`, `message` |
+| `alexaSay(echoEntityId)` | Makes the chosen Echo say the app's message. Pass `{ type: "tts" }` to skip the announcement chime. **Needs the Alexa Media Player integration, which isn't installed yet.** | `message` |
+| `phoneSay(notifyService)` | Makes an Android phone read the app's message out loud, on media volume. For Maddie's Pixel: `phoneSay("mobile_app_maddie_s_pixel")`. Not supported on iPhones. | `message` |
+| `speakOn(mediaPlayerEntityId)` | Makes a speaker or TV say the app's message using HA's text-to-speech. Candidates: `media_player.upstairs_speaker`, `shield`, `shield_2`, `downstairs`, `coreelec`. Test one before relying on it. | `message` |
+
+`alexaSay`, `phoneSay` and `speakOn` are functions because each app picks its own device: `say_upstairs: speakOn("media_player.upstairs_speaker")`.
 
 Put actions more than one app might use in `src/apps/shared/actions.ts`. Never add actions for locks, the alarm, sirens, the garage door or camera motion detection. A bug in an app or a leaked key shouldn't be able to open the house.
 

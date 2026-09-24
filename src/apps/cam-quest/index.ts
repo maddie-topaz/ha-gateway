@@ -1,6 +1,6 @@
 import {defineApp} from "../types.js";
 import {zoneActivity} from "../shared/events.js";
-import {notifyMaddiesPhone} from "../shared/actions.js";
+import {notifyMaddiesPhone, phoneSay} from "../shared/actions.js";
 
 
 export const camQuest = defineApp({
@@ -12,5 +12,10 @@ export const camQuest = defineApp({
 
   actions: {
     test_phone_notification: notifyMaddiesPhone,
+    say_on_maddies_phone: phoneSay("mobile_app_maddie_s_pixel"),
+    // Once you've confirmed which speaker works (see speakOn in shared/actions.ts):
+    // say_upstairs: speakOn("media_player.upstairs_speaker"),
+    // Once Alexa Media Player is installed (see alexaSay in shared/actions.ts):
+    // say_on_echo: alexaSay("media_player.<your_echo>"),
   },
 });
